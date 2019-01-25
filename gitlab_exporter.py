@@ -1,6 +1,7 @@
 #!/usr/bin/python
 
 import json
+import datetime
 import re
 import sys
 import time
@@ -12,6 +13,7 @@ import fnmatch
 from prometheus_client import start_http_server
 from prometheus_client.core import GaugeMetricFamily, REGISTRY
 
+epoch = datetime.datetime.utcfromtimestamp(0)
 
 class GitlabCollector(object):
     pipeline_status_map = {
@@ -26,6 +28,13 @@ class GitlabCollector(object):
     issue_status_map = {
         'opened': 0,
         'closed': 1,
+    }
+
+    mr_status_map = {
+        'opened': 0,
+        'closed': 1,
+        'locked': 2,
+        'merged': 3,
     }
 
     def __init__(self):
@@ -75,7 +84,7 @@ class GitlabCollector(object):
         metrics = []
 
         metrics += self.collect_issues()
-        # yield self.collect_merge_requests()
+        metrics += self.collect_merge_requests()
         metrics += self.collect_pipelines()
 
         for metric in metrics:
@@ -112,11 +121,13 @@ class GitlabCollector(object):
         issue_labels = [
             'project',
             'id',
+            'title',
             'assigned_user',
             'assigned_username'
         ]
 
         c_status = GaugeMetricFamily('gitlab_issue_state', 'status help text', labels=issue_labels)
+        c_created_at = GaugeMetricFamily('gitlab_issue_created_at', 'status help text', labels=issue_labels)
 
         for proj in self.projects:
             for issue in proj.issues.list(as_list=False):
@@ -131,16 +142,61 @@ class GitlabCollector(object):
                 labels = [ 
                     proj.path_with_namespace,
                     str(issue.id),
+                    issue.title,
                     assigned_user,
                     assigned_username,
                 ]
 
                 c_status.add_metric(labels=labels, value=self.issue_status_map[issue.state])
+                c_created_at.add_metric(labels=labels, value=self.to_timestamp(issue.created_at))
 
-        return [c_status]
+        return [c_status, c_created_at]
 
     def collect_merge_requests(self):
-        pass
+        mr_labels = [
+            'project',
+            'id',
+            'wip',
+            'title',
+            'assigned_user',
+            'assigned_username'
+        ]
+
+        c_status = GaugeMetricFamily('gitlab_merge_request_state', 'status help text', labels=mr_labels)
+        c_created_at = GaugeMetricFamily('gitlab_merge_request_created_at', 'status help text', labels=mr_labels)
+
+        for proj in self.projects:
+            for mr in proj.mergerequests.list(as_list=False):
+                print(mr)
+
+                assigned_user = 'None'
+                assigned_username = 'None'
+
+                if mr.assignee is not None:
+                    assigned_user = mr.assignee['name']
+                    assigned_username = mr.assignee['username']
+
+                labels = [ 
+                    proj.path_with_namespace,
+                    str(mr.id),
+                    str(mr.work_in_progress),
+                    mr.title,
+                    assigned_user,
+                    assigned_username,
+                ]
+
+                c_status.add_metric(labels=labels, value=self.mr_status_map[mr.state])
+                c_created_at.add_metric(labels=labels, value=self.to_timestamp(mr.created_at))
+
+        return [c_status, c_created_at]
+
+    def to_timestamp(self, date):
+        date = date.replace("Z", "+00:00")
+        date = datetime.datetime.fromisoformat(date)
+        date = date.replace(tzinfo=datetime.timezone.utc).timestamp() * 1000
+
+        return date
+
 
 if __name__ == "__main__":
     REGISTRY.register(GitlabCollector())
