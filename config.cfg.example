@@ -1,0 +1,12 @@
+[global]
+default = gitlab
+ssl_verify = true
+timeout = 5
+
+[gitlab]
+url = https://gitlab.com
+private_token = TOKEN
+api_version = 4
+
+[filter]
+filter = ["subgroup1/proj1", "subgroup2/*"]
