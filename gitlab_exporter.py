@@ -38,6 +38,7 @@ class GitlabCollector(object):
     }
 
     def __init__(self):
+        self.groups = []
         self.projects = []
         self.gl = gitlab.Gitlab.from_config('gitlab', ['config.cfg'])
 
@@ -57,12 +58,30 @@ class GitlabCollector(object):
             for filt in filter_json:
                 self.filters.append(filt)
         
+        self.load_groups()
         self.load_projects()
 
         print('Exporting for these projects:')
         for proj in self.projects:
             print('    {}'.format(proj.path_with_namespace))
         print('')
+
+    def load_groups(self):
+        groups = self.gl.groups.list(as_list=False)
+        for group in groups:
+            print(group.name)
+            include_group = True
+
+            if len(self.filters) > 0:
+                include_group = False
+
+                for group_filter in self.filters:
+                    if fnmatch.fnmatch(group.full_path, group_filter):
+                        include_group = True
+                        break
+
+            if include_group:
+                self.groups.append(group)
 
     def load_projects(self):
         projects = self.gl.projects.list(membership=True, as_list=False)
@@ -86,6 +105,7 @@ class GitlabCollector(object):
         metrics += self.collect_issues()
         metrics += self.collect_merge_requests()
         metrics += self.collect_pipelines()
+        metrics += self.collect_membership()
 
         for metric in metrics:
             yield metric
@@ -98,8 +118,8 @@ class GitlabCollector(object):
             'username',
         ]
 
-        c_status = GaugeMetricFamily('gitlab_pipeline_status2', 'status help text', labels=pipeline_labels)
-        c_duration = GaugeMetricFamily('gitlab_pipeline_duration', 'status help text', labels=pipeline_labels)
+        c_status = GaugeMetricFamily('gitlab_pipeline_status', 'Pipeline status', labels=pipeline_labels)
+        c_duration = GaugeMetricFamily('gitlab_pipeline_duration', 'Pipeline duration', labels=pipeline_labels)
 
         for proj in self.projects:
             for pipeline_short in proj.pipelines.list(as_list=False):
@@ -126,8 +146,8 @@ class GitlabCollector(object):
             'assigned_username'
         ]
 
-        c_status = GaugeMetricFamily('gitlab_issue_state', 'status help text', labels=issue_labels)
-        c_created_at = GaugeMetricFamily('gitlab_issue_created_at', 'status help text', labels=issue_labels)
+        c_status = GaugeMetricFamily('gitlab_issue_state', 'Issue state', labels=issue_labels)
+        c_created_at = GaugeMetricFamily('gitlab_issue_created_at', 'Issue created_at', labels=issue_labels)
 
         for proj in self.projects:
             for issue in proj.issues.list(as_list=False):
@@ -162,13 +182,12 @@ class GitlabCollector(object):
             'assigned_username'
         ]
 
-        c_status = GaugeMetricFamily('gitlab_merge_request_state', 'status help text', labels=mr_labels)
-        c_created_at = GaugeMetricFamily('gitlab_merge_request_created_at', 'status help text', labels=mr_labels)
+        c_status = GaugeMetricFamily('gitlab_merge_request_state', 'Merge request state', labels=mr_labels)
+        c_created_at = GaugeMetricFamily('gitlab_merge_request_created_at', 'Merge request created_at', labels=mr_labels)
+        c_updated_at = GaugeMetricFamily('gitlab_merge_request_updated_at', 'Merge request updated_at', labels=mr_labels)
 
         for proj in self.projects:
             for mr in proj.mergerequests.list(as_list=False):
-                print(mr)
-
                 assigned_user = 'None'
                 assigned_username = 'None'
 
@@ -180,15 +199,47 @@ class GitlabCollector(object):
                     proj.path_with_namespace,
                     str(mr.id),
                     str(mr.work_in_progress),
-                    mr.title,
-                    assigned_user,
-                    assigned_username,
+                    str(mr.title),
+                    str(assigned_user),
+                    str(assigned_username),
                 ]
 
                 c_status.add_metric(labels=labels, value=self.mr_status_map[mr.state])
                 c_created_at.add_metric(labels=labels, value=self.to_timestamp(mr.created_at))
+                c_updated_at.add_metric(labels=labels, value=self.to_timestamp(mr.updated_at))
 
-        return [c_status, c_created_at]
+        return [c_status, c_created_at, c_updated_at]
+
+    def collect_membership(self):
+        membership_labels = [
+            'path',
+            'user',
+            'username',
+        ]
+
+        c_membership = GaugeMetricFamily('gitlab_membership', 'Membership', labels=membership_labels)
+
+        for group in self.groups:
+            for member in group.members.list(as_list=False):
+                labels = [
+                    group.full_path,
+                    member.name,
+                    member.username,
+                ]
+
+                c_membership.add_metric(labels=labels, value=member.access_level)
+
+        for proj in self.projects:
+            for member in proj.members.list(as_list=False):
+                labels = [
+                    proj.path_with_namespace,
+                    member.name,
+                    member.username,
+                ]
+
+                c_membership.add_metric(labels=labels, value=member.access_level)
+
+        return [c_membership]
 
     def to_timestamp(self, date):
         date = date.replace("Z", "+00:00")
