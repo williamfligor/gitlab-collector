@@ -102,10 +102,13 @@ class GitlabCollector(object):
     def collect(self):
         metrics = []
 
+        print('Collecting...')
+
         metrics += self.collect_issues()
         metrics += self.collect_merge_requests()
         metrics += self.collect_pipelines()
         metrics += self.collect_membership()
+        metrics += self.collect_paths()
 
         for metric in metrics:
             yield metric
@@ -120,6 +123,7 @@ class GitlabCollector(object):
 
         c_status = GaugeMetricFamily('gitlab_pipeline_status', 'Pipeline status', labels=pipeline_labels)
         c_duration = GaugeMetricFamily('gitlab_pipeline_duration', 'Pipeline duration', labels=pipeline_labels)
+        c_created_at = GaugeMetricFamily('gitlab_pipeline_created_at', 'Pipeline created_at', labels=pipeline_labels)
 
         for proj in self.projects:
             for pipeline_short in proj.pipelines.list(as_list=False):
@@ -134,8 +138,9 @@ class GitlabCollector(object):
 
                 c_status.add_metric(labels=labels, value=self.pipeline_status_map[pipeline.status])
                 c_duration.add_metric(labels=labels, value=pipeline.duration)
+                c_created_at.add_metric(labels=labels, value=self.to_timestamp(pipeline.created_at))
 
-        return [c_status, c_duration]
+        return [c_status, c_duration, c_created_at]
 
     def collect_issues(self):
         issue_labels = [
@@ -240,6 +245,29 @@ class GitlabCollector(object):
                 c_membership.add_metric(labels=labels, value=member.access_level)
 
         return [c_membership]
+
+    def collect_paths(self):
+        membership_labels = [
+            'path',
+        ]
+
+        c_path = GaugeMetricFamily('gitlab_path', 'Paths', labels=membership_labels)
+
+        for group in self.groups:
+            labels = [
+                group.full_path,
+            ]
+
+            c_path.add_metric(labels=labels, value=1)
+
+        for proj in self.projects:
+            labels = [
+                proj.path_with_namespace,
+            ]
+
+            c_path.add_metric(labels=labels, value=1)
+
+        return [c_path]
 
     def to_timestamp(self, date):
         date = date.replace("Z", "+00:00")
