@@ -10,7 +10,7 @@ import gitlab
 import configparser
 import fnmatch
 
-from prometheus_client import start_http_server
+from prometheus_client import start_http_server, CollectorRegistry
 from prometheus_client.core import GaugeMetricFamily, REGISTRY
 
 epoch = datetime.datetime.utcfromtimestamp(0)
@@ -61,15 +61,11 @@ class GitlabCollector(object):
         self.load_groups()
         self.load_projects()
 
-        print('Exporting for these projects:')
-        for proj in self.projects:
-            print('    {}'.format(proj.path_with_namespace))
-        print('')
+        self.collectors = []
 
     def load_groups(self):
         groups = self.gl.groups.list(as_list=False)
         for group in groups:
-            print(group.name)
             include_group = True
 
             if len(self.filters) > 0:
@@ -104,11 +100,8 @@ class GitlabCollector(object):
 
         print('Collecting...')
 
-        metrics += self.collect_issues()
-        metrics += self.collect_merge_requests()
-        metrics += self.collect_pipelines()
-        metrics += self.collect_membership()
-        metrics += self.collect_paths()
+        for collector in self.collectors:
+            metrics += collector()
 
         for metric in metrics:
             yield metric
@@ -269,6 +262,46 @@ class GitlabCollector(object):
 
         return [c_path]
 
+    def collect_protected_branches(self):
+        pb_labels = [
+            'project',
+            'ref',
+        ]
+
+        c_push = GaugeMetricFamily('gitlab_protected_branch_push', 'Protected Branch', labels=pb_labels)
+        c_merge = GaugeMetricFamily('gitlab_protected_branch_merge', 'Protected Branch', labels=pb_labels)
+
+        for proj in self.projects:
+            for branch in proj.branches.list(as_list=False):
+                push = 0
+                merge = 0
+
+                if branch.protected:
+                    # Default to super high level
+                    push = 100000
+                    merge = 100000
+
+                    protection = proj.protectedbranches.get(branch.name)
+
+                    # find lower access levels
+                    for push_access in protection.push_access_levels:
+                        push = min(push, push_access['access_level'])
+
+                    # find lower access levels
+                    for merge_access in protection.merge_access_levels:
+                        merge = min(merge, merge_access['access_level'])
+
+                labels = [
+                    proj.path_with_namespace,
+                    branch.name,
+                ]
+
+                c_push.add_metric(labels=labels, value=push)
+                c_merge.add_metric(labels=labels, value=merge)
+
+        return [c_push, c_merge]
+
+
     def to_timestamp(self, date):
         date = date.replace("Z", "+00:00")
         date = datetime.datetime.fromisoformat(date)
@@ -278,7 +311,31 @@ class GitlabCollector(object):
 
 
 if __name__ == "__main__":
-    REGISTRY.register(GitlabCollector())
-    start_http_server(9118)
+    fast_register = CollectorRegistry(auto_describe=True)
+    slow_register = CollectorRegistry(auto_describe=True)
+
+    collector_1 = GitlabCollector()
+    collector_2 = GitlabCollector()
+
+    collector_1.collectors = [
+        collector_1.collect_issues,
+        collector_1.collect_merge_requests,
+        collector_1.collect_pipelines,
+    ]
+
+    collector_2.collectors = [
+        collector_2.collect_membership,
+        collector_2.collect_paths,
+        collector_2.collect_protected_branches,
+    ]
+
+    fast_register.register(collector_1)
+    slow_register.register(collector_2)
+
+    start_http_server(9118, registry=fast_register)
+    start_http_server(9119, registry=slow_register)
+
+    print('Started...')
+
     while True:
         time.sleep(30)
